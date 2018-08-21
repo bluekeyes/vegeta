@@ -3,6 +3,7 @@ package vegeta
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -22,6 +23,8 @@ type Attacker struct {
 	redirects int
 	seqmu     sync.Mutex
 	seq       uint64
+
+	discardBody bool
 }
 
 const (
@@ -187,6 +190,12 @@ func H2C(enabled bool) func(*Attacker) {
 	}
 }
 
+// DiscardBody returns a functional option which enables or disables saving of
+// response bodies for requests performed by an Attacker.
+func DiscardBody(discard bool) func(*Attacker) {
+	return func(a *Attacker) { a.discardBody = discard }
+}
+
 // A Rate of hits during an Attack.
 type Rate struct {
 	Freq int           // Frequency (number of occurrences) per ...
@@ -290,11 +299,20 @@ func (a *Attacker) hit(tr Targeter, name string) *Result {
 	}
 	defer r.Body.Close()
 
-	if res.Body, err = ioutil.ReadAll(r.Body); err != nil {
-		return &res
+	if a.discardBody {
+		var n int64
+		if n, err = io.Copy(ioutil.Discard, r.Body); err != nil {
+			return &res
+		}
+		res.BytesIn = uint64(n)
+	} else {
+		if res.Body, err = ioutil.ReadAll(r.Body); err != nil {
+			return &res
+		}
+		res.BytesIn = uint64(len(res.Body))
 	}
+
 	res.Latency = time.Since(res.Timestamp)
-	res.BytesIn = uint64(len(res.Body))
 
 	if req.ContentLength != -1 {
 		res.BytesOut = uint64(req.ContentLength)
